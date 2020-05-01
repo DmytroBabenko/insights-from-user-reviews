@@ -13,6 +13,8 @@ class CollocationExtractor:
 
 
 class StanfordNLPCollocationExtractor(CollocationExtractor):
+
+    MAX_WORDS_IN = 4
     COLLOCATION_TYPES = {
         "NOUN": ["VERB"],
         "PROPN": ["VERB"],
@@ -42,7 +44,9 @@ class StanfordNLPCollocationExtractor(CollocationExtractor):
                 second = token[2].upos
 
                 if self.__is_collocation(first, second):
-                    collocations.append((token[0].text.lower(), token[2].text.lower()))
+                    collocation = self.__create_collocation(token[0].text, token[2].text, sent.tokens)
+                    if len(collocation) <= self.MAX_WORDS_IN:
+                        collocations.append(collocation)
 
         return collocations
 
@@ -53,21 +57,40 @@ class StanfordNLPCollocationExtractor(CollocationExtractor):
 
         return False
 
-# sentence_example = "Чоловік був щирий та добре поводився зі своїм котом."
+    def __create_collocation(self, first_word, second_word, tokens):
+        collocation_words = []
+        any_word_found = False
+        for token in tokens:
+            any_word = None
+            if token.text == first_word:
+                any_word = first_word
+            elif token.text == second_word:
+                any_word = second_word
+
+            if any_word is not None:
+                collocation_words.append({
+                    'word': any_word.lower(),
+                    'upos': token.words[0].upos,
+                    'lemma': token.words[0].lemma
+                })
+
+                if any_word_found:
+                    break
+                else:
+                    any_word_found = True
+                    continue
 
 
-# collocation_extractor = StanfordNLPCollocationExtractor()
-#
-# collocations = collocation_extractor.extract(sentence_example)
-#
-# for collocation in collocations:
-#     print(collocation)
+            if any_word_found:
+                collocation_words.append({
+                    'word': token.text.lower(),
+                    'upos': token.words[0].upos,
+                    'lemma': token.words[0].lemma
+                })
 
 
-# nlp= stanfordnlp.Pipeline(lang="uk")
-# doc = nlp(sentence_example)
-#
-# for sent in doc.sentences:
-#     for token in sent.dependencies:
-#         print(token)
-#         print("#############################")
+        return tuple(collocation_words)
+
+
+    def __filter_collocations(self, collocations):
+        pass
