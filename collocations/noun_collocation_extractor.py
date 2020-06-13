@@ -1,6 +1,7 @@
-from typing import List
+import re
+import numpy as np
 
-import stanza
+from typing import List
 
 
 class TokenNode:
@@ -28,13 +29,10 @@ class TokenNode:
         return self.token_info['feats']
 
 
-
-
 class NounCollocationExtractor:
-
     SUPPORTED_NOUN_CHILD_DEPREL = ['amod', 'advmod', 'nmod', 'conj', 'orphan']
 
-    SUPPORTED_GRANDCHILD_DEPREL = ['advmod', 'conj', 'cc', 'punct', 'cop', 'case', 'discourse']
+    SUPPORTED_GRANDCHILD_DEPREL = ['advmod', 'conj', 'cc', 'punct', 'cop', 'case', 'discourse', 'nmod']
 
     IGNORE_NOUN_CHILD_DEPREL = ['nummod:gov']
     SUPPORTED_NOUN_HEAD_DEPREL = ['nsubj', "obj"]
@@ -45,8 +43,18 @@ class NounCollocationExtractor:
     START_STRIP_DEPREL = ['cc', 'punct']
     START_STRIP_POS = ['PUNCT']
 
+    _digits = re.compile('\d')
+    a_z = re.compile('[a-z]')
+
     def __init__(self, nlp):
         self.nlp = nlp
+
+    def extract_for_texts(self, texts: List[str]):
+        result = []
+        for text in texts:
+            result += self.extract(text)
+
+        return result
 
     def extract(self, text: str):
         doc = self.nlp(text)
@@ -59,7 +67,32 @@ class NounCollocationExtractor:
             for sub_sent in sent_doc.sentences:
                 result += self.__extract_from_sent(sub_sent.to_dict())
 
-        return result
+        # result = np.unique(result).tolist()
+        return self.__remove_duplicate(result)
+
+
+
+    def __remove_duplicate(self, collocations):
+        filtered_collocation = []
+        ids = set()
+        for collocation in collocations:
+            id = self.__calc_hash_for_collocation(collocation)
+            if id in ids:
+                continue
+
+            ids.add(id)
+            filtered_collocation.append(collocation)
+
+        return filtered_collocation
+
+
+    #TODO: replace for normal hash
+    @staticmethod
+    def __calc_hash_for_collocation(collocation):
+        hash_value = ""
+        for token in collocation:
+            hash_value += token['lemma']
+        return hash_value
 
     def __extract_from_sent(self, sent_info):
         result = []
@@ -74,6 +107,9 @@ class NounCollocationExtractor:
             collocation = self.__extract_collocation_for_noun(noun_token)
             if len(collocation) > 0:
                 result.append(collocation)
+
+        if self.__should_some_collocations_be_merged(result):
+            result = self.__merge_collocations_if_intersect(result)
 
         return result
 
@@ -97,8 +133,6 @@ class NounCollocationExtractor:
 
         return result
 
-
-
     def __extract_collocation_for_noun(self, noun_token):
         queue = self.__get_all_suitable_children(noun_token)
         if self.__is_head_suitable(noun_token):
@@ -117,7 +151,8 @@ class NounCollocationExtractor:
                     return []
 
                 if child.get_deprel() in self.SUPPORTED_GRANDCHILD_DEPREL:
-                    queue.append(child)
+                    if self.is_suitable_token_text(child.get_text()):
+                        queue.append(child)
 
         return self.__validate_noun_collocation(phrase_tokens)
 
@@ -129,7 +164,8 @@ class NounCollocationExtractor:
         for child in children:
             deprel = child.get_deprel()
             if deprel in self.SUPPORTED_NOUN_CHILD_DEPREL:
-                queue.append(child)
+                if self.is_suitable_token_text(child.get_text()):
+                    queue.append(child)
 
         return queue
 
@@ -188,9 +224,34 @@ class NounCollocationExtractor:
         if len(collocation_tokens) < 2:
             return []
 
-        return [item.get_text().lower() for item in collocation_tokens]
+        return [item.token_info for item in collocation_tokens]
+        # return collocation_tokens #[item.get_text().lower() for item in collocation_tokens]
 
+    def __merge_collocations_if_intersect(self, collocations):
+        new_collocations = []
+        i = 0
+        while i < len(collocations) - 1:
+            if int(collocations[i + 1][0]['id']) <= int(collocations[i][-1]['id']):
+                merged_collocation = collocations[i]
+                for j in range(0, len(collocations[i + 1])):
+                    if int(collocations[i + 1][j]['id']) > int(merged_collocation[-1]['id']):
+                        merged_collocation += collocations[i + 1][j:]
+                        break
+                new_collocations.append(merged_collocation)
+                i += 1
+            else:
+                new_collocations.append(collocations[i])
 
+            i += 1
+
+        return new_collocations
+
+    def __should_some_collocations_be_merged(self, collocations):
+        for i in range(0, len(collocations) - 1):
+            if int(collocations[i + 1][0]['id']) <= int(collocations[i][-1]['id']):
+                return True
+
+        return False
 
     def __find_max_len_non_sequence_words(self, collocation_tokens: List[TokenNode]):
         result = []
@@ -209,7 +270,6 @@ class NounCollocationExtractor:
                 max_seq = cur_seq[:]
 
         return max_seq
-
 
     def __is_collocation_valid_by_pos(self, collocation_tokens: List[TokenNode]):
         noun_token, adj_token, verb_token = None, None, None
@@ -231,9 +291,9 @@ class NounCollocationExtractor:
         if verb_token is None:
             if 'Case=Gen' in adj_token.get_feats():  # to avoid collocation like "гарячої води", but support "немає гарячої води":
                 return False
-        else:
-            if noun_token.get_id() < verb_token.get_id():  # to avoid collocation like "колеги знайшли"
-                return False
+        # else:
+        #     if noun_token.get_id() < verb_token.get_id():  # to avoid collocation like "колеги знайшли"
+        #         return False
 
         return True
 
@@ -271,7 +331,6 @@ class NounCollocationExtractor:
                 start = False
                 continue
 
-
             if token.get_deprel() in self.END_STRIP_DEPREL:
                 prev_token = token
                 should_add_prev_token = True
@@ -285,10 +344,24 @@ class NounCollocationExtractor:
 
         return result
 
+    def is_suitable_token_text(self, text):
+        if self.contains_digits(text):
+            return False
+
+        if self.contains_ansi(text):
+            return False
+
+        return True
+
+    def contains_digits(self, d):
+        return bool(self._digits.search(d))
+
+    def contains_ansi(self, s):
+        return bool(self.a_z.match(s))
 
 # nlp = stanza.Pipeline('uk')
 #
-# text_analyze = "Недорого, є кухня, туалет, душ."
+# text_analyze = "Дуже добрий речі і приємна квартира. Затишний готель для проживання у Львові. Рекомендувати😉"
 #
 # extractor = NounCollocationExtractor(nlp)
 #
